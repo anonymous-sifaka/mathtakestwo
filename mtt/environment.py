@@ -23,30 +23,33 @@ from .environment_data import test_questions
 from .environment_data import test_assignments
 from .environment_data import test_rinds
 
+
 # Class for sorting and returning set of 3x3 shapes - could be generalzed to e.g. 4x4
 
 class ShapeLibrary:
     def __init__(self, mode='precond'):
-        
+
+        assert mode in {'precond', 'practice', 'test'}
+
         self.mode = mode
-        
+
         self.shape_codes = shape_codes()
         self.shapes = shapes()
-        
+
         self.shape_dict = {code: np.array(shape) for code, shape in zip(self.shape_codes, self.shapes)}
-        
+
         # Restrict shape library in benchmark phase
         if self.mode == 'precond':
             self.shape_codes = self.shape_codes[:8]
-            self.shape_dict = {c:self.shape_dict[c] for c in self.shape_codes}
+            self.shape_dict = {c: self.shape_dict[c] for c in self.shape_codes}
 
         if self.mode == 'practice':
             self.shape_codes = self.shape_codes[:10]
-            self.shape_dict = {c:self.shape_dict[c] for c in self.shape_codes}
+            self.shape_dict = {c: self.shape_dict[c] for c in self.shape_codes}
 
         if self.mode == 'test':
-            self.shape_dict = {c:self.shape_dict[c] for c in self.shape_codes}
-        
+            self.shape_dict = {c: self.shape_dict[c] for c in self.shape_codes}
+
     def get_shape(self, code):
         """Return the shape matrix for a given code."""
         return self.shape_dict.get(code, None)
@@ -59,22 +62,27 @@ class ShapeLibrary:
         """Return the full dictionary of shape codes to matrices."""
         return self.shape_dict
 
+
 # Library of numbers restricted to training mode
 class NumberLibrary:
     def __init__(self, mode='precond'):
+
+        assert mode in {'precond', 'practice', 'test'}
+
         self.mode = mode
         self.numbers = number_set()
 
         # Restrict shape library to benchmark phase
         if self.mode == 'precond':
             self.numbers = self.numbers[:6]
-            
+
         if self.mode == 'practice':
             self.numbers = self.numbers[:7]
 
     def list_numbers(self):
         """Return all available shape codes."""
         return self.numbers
+
 
 ## Class for drawing shapes on a canvas
 
@@ -131,7 +139,7 @@ class ShapeDrawer:
         py = y * (self.shape_size + 1) + 1
 
         shape = self.shape_lib.get_shape(shape_code)
-        self.canvas[px:px+self.shape_size, py:py+self.shape_size] = shape
+        self.canvas[px:px + self.shape_size, py:py + self.shape_size] = shape
 
         # Track farthest x-drawn for offsetting next column group
         self.max_x = max(self.max_x, px + self.shape_size + 2)
@@ -165,8 +173,9 @@ class ShapeDrawer:
         self.offset = 0
         self.max_x = 0
 
+
 # Class for rendering shape programs
-        
+
 class ShapeProgramParser:
     def __init__(self, drawer):
         """
@@ -179,7 +188,7 @@ class ShapeProgramParser:
         """Convert a trinary (base-3) string to int."""
         return int(s, 3)
 
-    def render(self, prog_str, show_image=True, figsize=(5,5)):
+    def render(self, prog_str, show_image=True, figsize=(5, 5)):
         """
         Parses a program string and uses the ShapeDrawer to render shapes.
         Supported commands:
@@ -234,53 +243,54 @@ class ShapeProgramParser:
 
         if show_image:
             self.drawer.draw_image(figsize=figsize)
-        
+
         return self.drawer.canvas
-    
+
+
 # Class for generating random valid shape programs based on Markov state model
 
 class MarkovProgramGenerator:
-    
+
     def __init__(self, shape_lib, number_lib, max_length=8, transitions=None):
-        
+
         self.max_length = max_length
-        
+
         self.shapes = shape_lib.list_codes()
         self.numbers = number_lib.list_numbers()
-        
+
         if transitions == None:
             self.transitions_nm = self._build_transitions_nm()
         else:
             self.transitions_nm = transitions
-        
+
         self.shape_lib = shape_lib
         self.transitions_m = None
-        
+
     def _build_transitions_nm(self):
-        
+
         """
-        Import Markov Transition Probabilities 
-        
+        Import Markov Transition Probabilities
+
         """
-        
+
         return markov_transition_probs(self.shapes, self.numbers)
 
     def _build_transitions_m(self):
-        
+
         """
         Remove * option after use until next char values
-        
+
         """
-        
+
         transitions_m = dict()
-        
-        for k,v in self.transitions_nm.items():
+
+        for k, v in self.transitions_nm.items():
             transitions_m[k] = [ve for ve in v if ve[0] != '*']
-        
+
         return transitions_m
 
     def _sample_next_token(self, current, array_mode):
-        
+
         """
         Samples the next token based on current state and mode.
 
@@ -291,66 +301,64 @@ class MarkovProgramGenerator:
         Returns:
             str: Next token.
         """
-        
+
         transitions = self.transitions_m if array_mode else self.transitions_nm
-        
+
         options = transitions.get(current, [('END', 1.0)])
         tokens, probs = zip(*options)
-        
+
         choice = random.choices(tokens, weights=probs)[0]
-        
+
         shape_set = set(self.shapes)
-        
+
         if choice in shape_set:
-            
             shape_set.remove(choice)
             self.shapes = list(shape_set)
             transitions['+'] = [(s, 1.0 / len(self.shapes)) for s in self.shapes]
-        
+
         return choice
-    
 
     def generate_program(self):
-        
+
         """
         Generate a single program string.
 
         Returns:
             str: Generated program.
         """
-        
+
         program = []
         current = 'START'
         array_mode = False
 
         while len(program) < self.max_length:
-            
+
             token = self._sample_next_token(current, array_mode)
             if token == 'END':
                 break
 
             if current == '*':
                 array_mode = True
-                
+
                 if self.transitions_m == None:
                     self.transitions_m = self._build_transitions_m()
-                    
-                    
-            if current in {'A','B','C'}:
+
+            if current in {'A', 'B', 'C'}:
                 array_mode = False
 
             # Add characters from token (multi-char support)
             for ch in token:
                 if len(program) < self.max_length:
                     program.append(ch)
-            
+
             current = token[-1]  # base next state on last char
-        
+
         self.shapes = self.shape_lib.list_codes()
         return ''.join(program).strip('*+')
 
     def generate_batch(self, count=20):
         return [self.generate_program() for _ in range(count)]
+
 
 # Class for creating test question based on input program
 
@@ -375,7 +383,7 @@ class ProgramQuestionGenerator:
             prob_both (float): Probability of shape + number mutation.
         """
         assert abs(prob_shape + prob_number + prob_both - 1.0) < 1e-6, "Probabilities must sum to 1.0"
-        
+
         self.parser = parser
         self.generator = generator
 
@@ -505,13 +513,14 @@ class ProgramQuestionGenerator:
             fig, axes = plt.subplots(2, 2, figsize=(10, 8))
             for i, (ax, img) in enumerate(zip(axes.flat, imgs)):
                 ax.imshow(img.T, cmap='gray')
-                ax.set_title(f"Option {i+1}")
+                ax.set_title(f"Option {i + 1}")
                 ax.axis('off')
             plt.tight_layout()
             plt.show()
 
         return (imgs, answer, shuffled_options) if return_text else (imgs, answer)
-        
+
+
 class ExampleGenerator:
     """
     Generates examples, questions, and visualizations for symbolic shape-number programs.
@@ -543,22 +552,37 @@ class ExampleGenerator:
         self.valid_counter = 0
         self.figsize = figsize
 
-    def show_example(self):
+    def show_example(self, return_figure=False):
         """
         Render a random example and a multiple-choice question.
         """
         example = self.generator.generate_batch(1)[0]
-        print('Example Image:')
-        self.parser.render(example, figsize=self.figsize)
-        print('Example Question: Which answer is correct?')
-        self.questions_generator.generate_question(example, show_image=True)
 
-    def show_edge_cases(self):
+        if return_figure:
+            img = self.parser.render(example, figsize=self.figsize, show_image=False)
+            imgs = self.questions_generator.generate_question(example, show_image=False)
+
+            return img, imgs
+
+        else:
+            print('Example Image:')
+            self.parser.render(example, figsize=self.figsize)
+            print('Example Question: Which answer is correct?')
+            self.questions_generator.generate_question(example, show_image=True)
+
+    def show_edge_cases(self, return_figure=False):
         """
         Display predefined edge cases using the parser.
         """
-        for case in edge_cases():
-            self.parser.render(case, figsize=self.figsize)
+        if return_figure:
+            imgs = []
+            for case in edge_cases():
+                imgs.append(self.parser.render(case, figsize=self.figsize, show_image=False))
+            return imgs
+
+        else:
+            for case in edge_cases():
+                self.parser.render(case, figsize=self.figsize)
 
     def generate_q_batch(self, program_str):
         """
@@ -633,6 +657,10 @@ class ExampleGenerator:
             if example not in self.valid_set:
                 return example
 
+
+import numpy as np
+
+
 class QuizGenerator:
     """
     Orchestrates practice and test phases for a communication task between
@@ -685,42 +713,59 @@ class QuizGenerator:
         self.test_count = 0
         self.prev_rind = []
 
-    def get_next_practice(self):
+    def get_next_practice(self, return_figure=False):
         """
         Advance to the next practice question and render based on player role.
         Describer sees an image; visualizer sees options.
         """
         if self.practice_count >= 10:
-            if self.player_type == 'visualizer':
+            if self.player_type == 'visualizer' and not return_figure:
                 print('The answer to the last question is:',
                       np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
             print('✅ Practice Complete - Please move onto the next stage')
-            return
+            return None
 
         set_key = f'set_{self.practice_count}'
         idx = self.practice_as[set_key][self.player_n]
         program = self.practice_programs[set_key][idx]
 
-        if self.practice_count >= 1 and self.player_type == 'visualizer':
+        if self.practice_count >= 1 and self.player_type == 'visualizer' and not return_figure:
             print('The answer to the last question is:',
                   np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
 
         if self.player_type == 'describer':
-            print(f'Question {self.practice_count} (Describer) - Image:\n')
-            self.parser_practice.render(program, figsize=self.figsize)
+            if return_figure:
+                img = self.parser_practice.render(program, figsize=self.figsize, show_image=False)
+                self.practice_count += 1
+                return img
+            else:
+                print(f'Question {self.practice_count} (Describer) - Image:\n')
+                self.parser_practice.render(program, figsize=self.figsize)
+                self.practice_count += 1
+                return None
 
         elif self.player_type == 'visualizer':
             options = self.practice_questions[set_key][idx]
             rinds = self.practice_rinds[set_key][idx]
-            print(f'Question {self.practice_count} (Visualizer): Which image is the describer seeing?\n')
-            self.practice_generator.generate_question(
-                program, show_image=True, options=options, rinds=rinds
-            )
+
+            if return_figure:
+                imgs, answer = self.practice_generator.generate_question(
+                    program, show_image=False, options=options, rinds=rinds
+                )
+                self.practice_count += 1
+                return imgs
+            else:
+                print(f'Question {self.practice_count} (Visualizer): Which image is the describer seeing?\n')
+                self.practice_generator.generate_question(
+                    program, show_image=True, options=options, rinds=rinds
+                )
+                self.practice_count += 1
+
             self.prev_rind = rinds
+            return None
+        return None
 
-        self.practice_count += 1
-
-    def get_next_test(self):
+    def get_next_test(self, return_figure=False):
         """
         Advance to the next test question and render based on player role.
         Describer sees image; visualizer sees options. No answers are shown.
@@ -734,19 +779,38 @@ class QuizGenerator:
         program = self.test_programs[set_key][idx]
 
         if self.player_type == 'describer':
-            print(f'Question {self.test_count} (Describer) - Image:\n')
-            self.parser_test.render(program, figsize=self.figsize)
+
+            if return_figure:
+                img = self.parser_test.render(program, figsize=self.figsize, show_image=False)
+                self.test_count += 1
+                return img
+            else:
+                print(f'Question {self.test_count} (Describer) - Image:\n')
+                self.parser_test.render(program, figsize=self.figsize)
+                self.test_count += 1
 
         elif self.player_type == 'visualizer':
             options = self.test_questions[set_key][idx]
             rinds = self.test_rinds[set_key][idx]
-            print(f'Question {self.test_count} (Visualizer): Which image is the describer seeing?\n')
-            self.test_generator.generate_question(
-                program, show_image=True, options=options, rinds=rinds
-            )
 
-        self.test_count += 1
+            if return_figure:
+                imgs, answer = self.test_generator.generate_question(
+                    program, show_image=False, options=options, rinds=rinds
+                )
+                self.test_count += 1
+                return imgs
+            else:
+                print(f'Question {self.test_count} (Visualizer): Which image is the describer seeing?\n')
+                self.test_generator.generate_question(
+                    program, show_image=True, options=options, rinds=rinds
+                )
+                self.test_count += 1
+            return None
+        return None
+
+
 import numpy as np
+
 
 class QuizGeneratorML:
     """
@@ -755,7 +819,7 @@ class QuizGeneratorML:
     """
 
     def __init__(self, mode='ml_version', player_index=None, player_role=None):
-        
+
         """
         Initialize a quiz session for either ML evaluation or human testing.
 
@@ -764,7 +828,7 @@ class QuizGeneratorML:
             player_index (int): Index of the human player (0–9). Required for 'human_version'.
             player_role (str): Role of the player ('describer' or 'visualizer'). Required for 'human_version'.
         """
-        
+
         assert mode in {'ml_version', 'human_version'}
         self.mode = mode
 
@@ -857,18 +921,122 @@ class QuizGeneratorML:
         if self.counts[phase] >= self.lengths[phase]:
             self.counts[phase] = 0
 
-        return img, option_imgs, answer_mask
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
+        return img, option_imgs, answer_mask, program, options
+
+
+class EvalLogger:
+    def __init__(self, mode_1, mode_2):
+
+        assert mode_1 in {'precond', 'practice', 'test'}
+        assert mode_1 in {'precond', 'practice', 'test'}
+
+        mode_1_codes = set(ShapeLibrary(mode=mode_1).shape_codes)
+        mode_2_codes = set(ShapeLibrary(mode=mode_2).shape_codes)
+        self.new_codes = list(mode_2_codes.difference(mode_1_codes))
+
+        mode_1_numbers = set(NumberLibrary(mode=mode_1).numbers)
+        mode_2_numbers = set(NumberLibrary(mode=mode_2).numbers)
+        self.new_numbers = list(mode_2_numbers.difference(mode_1_numbers))
+
+        self.logging_dict = {
+            'ood_symbol_question': 0,
+            'ood_number_question': 0,
+            'ood_both_question': 0,
+            'ood_symbol_answer': 0,
+            'ood_number_answer': 0,
+            'ood_both_answer': 0,
+        }
+
+        self.correct_dict = self.logging_dict.copy()
+        self.count, self.correct = 0, 0
+
+    def reset(self, ):
+
+        self.logging_dict = {
+            'ood_symbol_question': 0,
+            'ood_number_question': 0,
+            'ood_both_question': 0,
+            'ood_symbol_answer': 0,
+            'ood_number_answer': 0,
+            'ood_both_answer': 0,
+        }
+        self.correct_dict = logging_dict.copy()
+
+    def test_qna(self, answer, prediction, program, options):
+
+        # High level scores updates
+
+        self.count += len(prediction)
+
+        correct = prediction == answer
+        correct = np.asarray(correct.cpu())
+        self.correct += correct.sum()
+
+        for zz in range(len(program)):
+            # Test if question is out of distribution
+
+            for v in self.new_codes:
+                if v in program[zz]:
+                    self.logging_dict['ood_symbol_question'] += 1
+                    self.correct_dict['ood_symbol_question'] += correct[zz]
+
+            for v in self.new_numbers:
+                if v in program[zz]:
+                    self.logging_dict['ood_number_question'] += 1
+                    self.correct_dict['ood_number_question'] += correct[zz]
+
+            for v in self.new_codes:
+                for w in self.new_numbers:
+                    if v in program[zz] and w in program[0]:
+                        self.logging_dict['ood_both_question'] += 1
+                        self.correct_dict['ood_both_question'] += correct[zz]
+
+                        # Test if answer is out of distribution
+
+            flag1, flag2, flag3 = False, False, False
+
+            for v in self.new_codes:
+                for p in options:
+                    if v in p[zz]:
+                        flag1 = True
+            if flag1:
+                self.logging_dict['ood_symbol_answer'] += 1
+                self.correct_dict['ood_symbol_answer'] += correct[zz]
+
+            for v in self.new_numbers:
+                for p in options:
+                    if v in p[zz]:
+                        flag2 = True
+            if flag2:
+                self.logging_dict['ood_number_answer'] += 1
+                self.correct_dict['ood_number_answer'] += correct[zz]
+
+            for v in self.new_codes:
+                for w in self.new_numbers:
+                    for p in options:
+                        if v in p[zz] and w in p[0]:
+                            flag3 = True
+            if flag3:
+                self.logging_dict['ood_both_answer'] += 1
+                self.correct_dict['ood_both_answer'] += correct[zz]
+
+    def return_results(self):
+
+        self.acc_dict = dict()
+        for k, v in self.logging_dict.items():
+            if v > 0:
+                self.acc_dict[k] = self.correct_dict[k] / v
+            else:
+                self.acc_dict[k] = 0
+
+        self.eval_results = {'question_n': self.count,
+                             'correct_n': self.correct,
+                             'accuracy': self.correct / self.count,
+                             'logging_dict': self.logging_dict,
+                             'correct_dict': self.correct_dict,
+                             'accuracy_dict': self.acc_dict}
+        return self.eval_results
+
         
         
         
