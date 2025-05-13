@@ -2,6 +2,42 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
+
+def visualize_reconstructions_unet(model, dataset, num_examples=5, batch_size=1, title_prefix=""):
+    """
+    Visualize original vs. reconstructed images from a model and dataset.
+
+    Args:
+        model (torch.nn.Module): Trained model with .eval() mode and loaded weights.
+        dataset (torch.utils.data.Dataset): Dataset object (e.g., PrecondDataset).
+        num_examples (int): Number of examples to display.
+        batch_size (int): Batch size for DataLoader.
+        title_prefix (str): Optional title prefix (e.g., "Validation").
+    """
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    model.eval()
+
+    with torch.no_grad():
+        for i, batch in enumerate(dataloader):
+            x = batch.cuda()  # Assumes shape [B, 1, H, W]
+            recon = model(x)
+
+            for b in range(x.size(0)):
+                if i * batch_size + b >= num_examples:
+                    return
+
+                fig, axs = plt.subplots(1, 2, figsize=(6, 3))
+                axs[0].imshow(x[b, 0].cpu().numpy(), cmap='gray')
+                axs[0].set_title(f"{title_prefix} Original")
+                axs[0].axis('off')
+
+                axs[1].imshow(recon[b, 0].cpu().numpy(), cmap='gray')
+                axs[1].set_title(f"{title_prefix} Reconstructed")
+                axs[1].axis('off')
+
+                plt.tight_layout()
+                plt.show()
+
 def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_examples=5):
     symbolic_model.eval()
 

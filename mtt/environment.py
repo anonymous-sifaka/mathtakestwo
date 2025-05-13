@@ -179,7 +179,7 @@ class ShapeProgramParser:
         """Convert a trinary (base-3) string to int."""
         return int(s, 3)
 
-    def render(self, prog_str, show_image=True,figsize=(5,5)):
+    def render(self, prog_str, show_image=True, figsize=(5,5)):
         """
         Parses a program string and uses the ShapeDrawer to render shapes.
         Supported commands:
@@ -632,8 +632,6 @@ class ExampleGenerator:
             example = self.generator.generate_batch(1)[0]
             if example not in self.valid_set:
                 return example
-
-import numpy as np
 
 class QuizGenerator:
     """
