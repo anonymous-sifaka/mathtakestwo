@@ -1,226 +1,359 @@
-import matplotlib.pyplot as plt
 import torch
-import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+#### UNET IMAGE COMPRESSION MODEL ####
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-def visualize_reconstructions_unet(model, dataloader, num_examples=5, batch_size=1, title_prefix=""):
-    """
-    Visualize original vs. reconstructed images from a model and dataset.
+class UNetCompressor(nn.Module):
+    def __init__(self):
+        super(UNetCompressor, self).__init__()
 
-    Args:
-        model (torch.nn.Module): Trained model with .eval() mode and loaded weights.
-        dataset (torch.utils.data.Dataset): Dataset object (e.g., PrecondDataset).
-        num_examples (int): Number of examples to display.
-        batch_size (int): Batch size for DataLoader.
-        title_prefix (str): Optional title prefix (e.g., "Validation").
-    """
-    model.eval()
+        def block(in_channels, out_channels, num_convs=4):
+            layers = []
+            for i in range(num_convs):
+                conv_in = in_channels if i == 0 else out_channels
+                layers.append(nn.Conv2d(conv_in, out_channels, 3, padding=1))
+                layers.append(nn.BatchNorm2d(out_channels))
+                layers.append(nn.ReLU(inplace=True))
+            return nn.Sequential(*layers)
 
-    with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            x = batch.cuda()  # Assumes shape [B, 1, H, W]
-            recon = model(x)
+        # --- Encoder ---
+        self.enc1 = block(1, 32)
+        self.pool1 = nn.MaxPool2d(2)
 
-            for b in range(x.size(0)):
-                if i * batch_size + b >= num_examples:
-                    return
+        self.enc2 = block(32, 64)
+        self.pool2 = nn.MaxPool2d(2)
 
-                fig, axs = plt.subplots(1, 2, figsize=(6, 3))
-                axs[0].imshow(x[b, 0].cpu().numpy(), cmap='gray')
-                axs[0].set_title(f"{title_prefix} Original")
-                axs[0].axis('off')
+        self.enc3 = block(64, 128)
+        self.pool3 = nn.MaxPool2d(2)
 
-                axs[1].imshow(recon[b, 0].cpu().numpy(), cmap='gray')
-                axs[1].set_title(f"{title_prefix} Reconstructed")
-                axs[1].axis('off')
+        # Bottleneck
+        self.bottleneck = block(128, 128)
 
-                plt.tight_layout()
-                plt.show()
+        # --- Decoder ---
+        self.up3 = nn.Conv2d(128, 128, kernel_size=1)
+        self.dec3 = block(128, 64)
 
+        self.up2 = nn.Conv2d(64, 64, kernel_size=1)
+        self.dec2 = block(64 + 64, 32)
 
-def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_examples=5):
-    symbolic_model.eval()
+        self.up1 = nn.Conv2d(32, 32, kernel_size=1)
+        self.dec1 = block(32, 16)
 
-    with torch.no_grad():
-        for batch in dataloader:
-            x = batch.to(device)  # [B, 1, 47, 41]
-            x_recon, sym_b, sym_skip = symbolic_model(x, hard=True)
+        self.final = nn.Conv2d(16, 1, kernel_size=1)
 
-            x = x.cpu().numpy()
-            x_recon = x_recon.cpu().numpy()
-            sym_b = sym_b.argmax(dim=-1).cpu().numpy()  # [B, L]
-            sym_skip = sym_skip.argmax(dim=-1).cpu().numpy()  # [B, L]
-            break  # single batch
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
 
-    # Plot original vs reconstructed
-    plt.figure(figsize=(10, 2 * num_examples))
-    for i in range(num_examples):
-        # Original
-        plt.subplot(num_examples, 2, 2 * i + 1)
-        plt.imshow(x[i, 0], cmap="gray")
-        plt.title("Original")
-        plt.axis("off")
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
 
-        # Reconstructed
-        plt.subplot(num_examples, 2, 2 * i + 2)
-        plt.imshow(x_recon[i, 0], cmap="gray")
-        plt.title("Reconstructed")
-        plt.axis("off")
+        e3 = self.enc3(p2)
+        p3 = self.pool3(e3)
 
-        # Print symbolic tokens
-        b_tokens = ' '.join([f'b{tok}' for tok in sym_b[i]])
-        s_tokens = ' '.join([f's{tok}' for tok in sym_skip[i]])
-        print(f"[Image {i + 1}] Bottleneck symbols:     {b_tokens}")
-        print(f"[Image {i + 1}] Skip connection symbols: {s_tokens}")
-        print("")
+        b = self.bottleneck(p3)
 
-    plt.tight_layout()
-    plt.show()
+        # Decoder
+        up3 = F.interpolate(self.up3(b), size=e3.shape[2:], mode='bilinear', align_corners=False)
+        d3 = self.dec3(up3)
+
+        up2 = F.interpolate(self.up2(d3), size=e2.shape[2:], mode='bilinear', align_corners=False)
+        d2 = self.dec2(torch.cat([up2, e2], dim=1))
+
+        up1 = F.interpolate(self.up1(d2), size=e1.shape[2:], mode='bilinear', align_corners=False)
+        d1 = self.dec1(up1)
+
+        return self.final(d1)
 
 
-def visualize_qna_prediction(answer_model, symbolic_model, dataset, idx=None, device='cpu'):
-    """
-    Visualizes the prediction of the model on a given index from the dataset.
-    If idx is None, picks a random example.
-    """
-    answer_model.eval()
-    answer_model.to(device)
+##### MODELS FOR SYMBOLIC COMPRESSION ####
 
-    if idx is None:
-        idx = torch.randint(0, len(dataset), (1,)).item()
+class GumbelSymbolEncoder(nn.Module):
+    def __init__(self, in_dim, hidden_dim=128, num_symbols=8, symbol_length=4, temperature=1.0):
+        super().__init__()
+        self.temperature = temperature
+        self.symbol_length = symbol_length
+        self.num_symbols = num_symbols
 
-    img, questions, answer, program, options = dataset[idx]
-    img = img.unsqueeze(0).to(device)  # [1, 1, H, W]
+        self.encoder = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_symbols * symbol_length)
+        )
 
-    img_recon, sym_b, sym_skip = symbolic_model(img, hard=True)
+    def forward(self, x, hard=False):
 
-    img_recon_np = img_recon.squeeze().cpu().numpy()
-    sym_b = sym_b.argmax(dim=-1).cpu().numpy()  # [B, L]
-    sym_skip = sym_skip.argmax(dim=-1).cpu().numpy()  # [B, L]
+        logits = self.encoder(x)  # [B, K * L]
+        logits = logits.view(-1, self.symbol_length, self.num_symbols)  # [B, L, K]
 
-    questions = questions.unsqueeze(0).to(device)  # [1, 4, 1, H, W]
+        if hard:
+            # Use deterministic mode: take top-k instead of sampling
+            symbols = F.one_hot(logits.argmax(dim=-1), num_classes=self.num_symbols).float()
+        else:
+            symbols = F.gumbel_softmax(logits, tau=self.temperature, hard=hard)
 
-    with torch.no_grad():
-        logits = answer_model(img_recon, questions)
-        pred_idx = logits.argmax(dim=1).item()
-
-    true_idx = answer.item()
-
-    # Convert to numpy for plotting
-
-    img_np = img.squeeze().cpu().numpy()
-    questions_np = questions.squeeze().cpu().numpy()  # [4, H, W]
-
-    # --- Plotting ---
-    fig, axs = plt.subplots(1, 6, figsize=(15, 3))
-
-    axs[0].imshow(img_np, cmap='gray')
-    axs[0].set_title("Query Image")
-    axs[0].axis('off')
-
-    axs[1].imshow(img_recon_np, cmap='gray')
-    axs[1].set_title("Reconstructed Image")
-    axs[1].axis('off')
-
-    # Print program and answers
-    print(f"[Image {1}] | Program: {program} | | Questions: {options}")
-
-    # Print symbolic tokens
-    b_tokens = ' '.join([f'b{tok}' for tok in sym_b[0]])
-    s_tokens = ' '.join([f's{tok}' for tok in sym_skip[0]])
-    print(f"[Image {1}] Bottleneck symbols:     {b_tokens}")
-    print(f"[Image {1}] Skip connection symbols: {s_tokens}")
-    print("")
-
-    for i in range(4):
-        axs[i + 2].imshow(questions_np[i], cmap='gray')
-        title = f"Q{i} "
-        if i == true_idx:
-            title += "✓"
-        if i == pred_idx:
-            title += " ⬅"
-        axs[i + 2].set_title(title)
-        axs[i + 2].axis('off')
-
-    plt.suptitle(f"Predicted: Q{pred_idx} | Ground Truth: Q{true_idx}", fontsize=14)
-    plt.tight_layout()
-    plt.show()
+        return symbols  # [B, L, K]
 
 
-def visualize_recon_from_msg(symbolic_model, msg, device="cuda"):
-    symbolic_model.eval()
+class SymbolToImageDecoder(nn.Module):
 
-    symbols = {'A': 0, 'B': 1, 'C': 2, '0': 3, '1': 4, '2': 5, '+': 6, '*': 7}
-    bneck_embedding = np.zeros((6, 8))
-    skip_embedding = np.zeros((2, 8))
+    def __init__(self, num_symbols=8, symbol_length=8, embed_dim=128,
+                 bottleneck_shape=(128, 5, 5), skip_shape=(64, 11, 10)):
+        super().__init__()
 
-    bn_msg = msg[:6]
-    skp_msg = msg[6:]
+        self.bottleneck_shape = bottleneck_shape
+        self.skip_shape = skip_shape
 
-    locs = np.asarray([(i, symbols[c]) for i, c in enumerate(bn_msg)])
-    for loc in locs:
-        bneck_embedding[loc[0], loc[1]] = 1
+        # Project discrete symbols to dense embedding
+        self.embed = nn.Linear(num_symbols, embed_dim)
 
-    locs = np.asarray([(i, symbols[c]) for i, c in enumerate(skp_msg)])
-    for loc in locs:
-        skip_embedding[loc[0], loc[1]] = 1
+        # Bottleneck decoder
+        self.bottleneck_decoder = nn.Sequential(
+            nn.Linear(1536, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2])
+        )
 
-    bneck_embedding = np.expand_dims(bneck_embedding, axis=0)
-    skip_embedding = np.expand_dims(skip_embedding, axis=0)
+        # Skip feature decoder
+        self.skip_decoder = nn.Sequential(
+            nn.Linear(512, 4096),
+            nn.ReLU(),
+            nn.Linear(4096, skip_shape[0] * skip_shape[1] * skip_shape[2])
+        )
 
-    with torch.no_grad():
+    def forward(self, sym_b, sym_skip):
+        b = self.embed(sym_b).view(sym_b.size(0), -1)  # [B, L*D]
+        e2 = self.embed(sym_skip).view(sym_skip.size(0), -1)
 
-        bneck_embedding = torch.tensor(bneck_embedding.astype(np.float32)).to(device)
-        skip_embedding = torch.tensor(skip_embedding.astype(np.float32)).to(device)
+        b_feats = self.bottleneck_decoder(b).view(-1, *self.bottleneck_shape)
+        e2_feats = self.skip_decoder(e2).view(-1, *self.skip_shape)
 
-        x_recon = symbolic_model.recon_from_symbols(bneck_embedding, skip_embedding)
-        x_recon = x_recon.cpu().numpy()[0, 0, :, :]
-
-    # Plot reconstructed
-    plt.figure(figsize=(5, 5))
-
-    # Reconstructed
-    plt.imshow(x_recon, cmap="gray")
-    plt.title("Reconstructed")
-    plt.axis("off")
-    plt.show()
+        return b_feats, e2_feats
 
 
-def visualize_gumbel_reconstructions(sender, receiver, dataloader, device="cuda", num_examples=5):
-    sender.eval()
-    receiver.eval()
+class UNetWithSymbolicBottleneck(nn.Module):
+    def __init__(self, unet, bottleneck_shape=(256, 5, 5), skip_shape=(256, 11, 10),
+                 num_symbols=8, symbol_length=8):
+        super().__init__()
+        self.unet = unet
+        for p in self.unet.parameters():
+            p.requires_grad = False
 
-    with torch.no_grad():
-        for batch in dataloader:
-            x = batch.to(device)  # [B, 1, 47, 41]
-            symbols = sender(x, hard=True)  # [B, L, K]
-            x_recon = receiver(symbols)
+        self.bottleneck_shape = bottleneck_shape
+        self.skip_shape = skip_shape
 
-            # Convert symbolic tensor to human-readable format
-            token_ids = symbols.argmax(dim=-1).cpu().numpy()  # [B, L]
+        self.bottleneck_encoder = GumbelSymbolEncoder(
+            in_dim=bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2],
+            num_symbols=num_symbols,
+            symbol_length=6
+        )
 
-            x = x.cpu().numpy()
-            x_recon = x_recon.cpu().numpy()
-            break  # One batch only
+        self.skip_encoder = GumbelSymbolEncoder(
+            in_dim=skip_shape[0] * skip_shape[1] * skip_shape[2],
+            num_symbols=num_symbols,
+            symbol_length=2
+        )
 
-    # --- Plot ---
-    plt.figure(figsize=(10, 2 * num_examples))
-    for i in range(num_examples):
-        # Original
-        plt.subplot(num_examples, 2, 2 * i + 1)
-        plt.imshow(x[i, 0], cmap='gray')
-        plt.title("Original")
-        plt.axis("off")
+        self.decoder = SymbolToImageDecoder(
+            num_symbols=num_symbols,
+            symbol_length=symbol_length,  # bottleneck + skip
+            embed_dim=256,
+        )
 
-        # Reconstructed
-        plt.subplot(num_examples, 2, 2 * i + 2)
-        plt.imshow(x_recon[i, 0], cmap='gray')
-        plt.title("Reconstructed")
-        plt.axis("off")
+    def forward(self, x, hard=False):
+        # Pass through encoder
 
-        # Print symbolic sequence
-        symbols_str = ' '.join([f'z{tok}' for tok in token_ids[i]])
-        print(f"[Image {i + 1}] Symbolic language: {symbols_str}")
+        e1 = self.unet.enc1(x)
+        p1 = self.unet.pool1(e1)
 
-    plt.tight_layout()
-    plt.show()
+        e2 = self.unet.enc2(p1)
+        p2 = self.unet.pool2(e2)
+
+        e3 = self.unet.enc3(p2)
+        p3 = self.unet.pool3(e3)
+
+        b = self.unet.bottleneck(p3)  # [B, 128, 5, 5]
+
+        # Extract and encode symbolic representations
+
+        b_flat = b.view(b.size(0), -1)
+        e2_resized = F.adaptive_avg_pool2d(e2, self.skip_shape[1:])
+        e2_flat = e2_resized.view(e2_resized.size(0), -1)
+
+        sym_b = self.bottleneck_encoder(b_flat, hard=hard)
+        sym_skip = self.skip_encoder(e2_flat, hard=hard)
+
+        # Decode symbols back into feature maps
+
+        b_decoded, e2_decoded = self.decoder(sym_b, sym_skip)
+
+        # --- Decoder path from b_decoded and e2_decoded ---
+
+        up3 = F.interpolate(self.unet.up3(b_decoded), size=e3.shape[2:], mode='bilinear', align_corners=False)
+        d3 = self.unet.dec3(up3)
+
+        up2 = F.interpolate(self.unet.up2(d3), size=e2_decoded.shape[2:], mode='bilinear', align_corners=False)
+        d2 = self.unet.dec2(torch.cat([up2, e2_decoded], dim=1))
+
+        up1 = F.interpolate(self.unet.up1(d2), size=x.shape[2:], mode='bilinear', align_corners=False)
+        d1 = self.unet.dec1(up1)
+
+        out = self.unet.final(d1)
+
+        # print(e3.shape[2:]) - use to define size for recon function if changing input image size
+        # print(e2_decoded.shape[2:])
+        # print(x.shape[2:])
+
+        return out, sym_b, sym_skip
+
+    def recon_from_symbols(self, sym_b, sym_skip, hard=False):
+        # Decode symbols back into feature maps
+
+        b_decoded, e2_decoded = self.decoder(sym_b, sym_skip)
+
+        # --- Decoder path from b_decoded and e2_decoded ---
+
+        up3 = F.interpolate(self.unet.up3(b_decoded), size=[11, 10], mode='bilinear', align_corners=False)
+        d3 = self.unet.dec3(up3)
+
+        up2 = F.interpolate(self.unet.up2(d3), size=[11, 10], mode='bilinear', align_corners=False)
+        d2 = self.unet.dec2(torch.cat([up2, e2_decoded], dim=1))
+
+        up1 = F.interpolate(self.unet.up1(d2), size=[47, 41], mode='bilinear', align_corners=False)
+        d1 = self.unet.dec1(up1)
+
+        out = self.unet.final(d1)
+        return out
+
+
+#### MODELS FOR INPUT vs. QUESTIONS SIMILARITY SEARCH ####
+
+# --- Dataset from previous step ---
+class SimilarityDataset(torch.utils.data.Dataset):
+    def __init__(self, example_generator, num_samples=10000):
+        self.generator = example_generator
+        self.num_samples = num_samples
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        img, answer, questions = self.generator.get_qna()
+        img_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+        questions_tensor = torch.tensor(questions, dtype=torch.float32)
+        answer_tensor = torch.tensor(answer.argmax(), dtype=torch.long)
+        return img_tensor, questions_tensor, answer_tensor
+
+
+# --- Simple CNN Encoder ---
+class ImageEncoder(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
+            nn.MaxPool2d(2),  # -> [32, 23, 20]
+            nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),  # -> [64, 4, 4]
+        )
+        self.fc = nn.Linear(64 * 4 * 4, latent_dim)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x)  # [B, latent_dim]
+
+
+# --- Similarity Model ---
+class SimilarityModel(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.encoder = ImageEncoder(latent_dim)
+
+    def forward(self, img, questions):
+        # img: [B, 1, H, W]
+        # questions: [B, 4, 1, H, W]
+        B = img.shape[0]
+
+        img_enc = self.encoder(img)  # [B, D]
+        q_enc = self.encoder(questions.view(-1, 1, 47, 41))  # [B*4, D]
+        q_enc = q_enc.view(B, 4, -1)  # [B, 4, D]
+
+        # Normalize for cosine similarity
+        img_enc = F.normalize(img_enc, dim=1).unsqueeze(1)  # [B, 1, D]
+        q_enc = F.normalize(q_enc, dim=2)  # [B, 4, D]
+
+        scores = (img_enc * q_enc).sum(dim=2)  # [B, 4] cosine similarity
+        return scores
+
+
+##### BASELINE SYMBOLIC COMPRESSION MODELS #####
+
+class DirectGumbelSymbolEncoder(nn.Module):
+    def __init__(self, in_channels=1, hidden_dim=64, num_symbols=16, symbol_length=8, temperature=1.0):
+        """
+        Args:
+            in_channels (int): Number of input channels (e.g., 1 for grayscale).
+            hidden_dim (int): Dimensionality of intermediate CNN features.
+            num_symbols (int): Size of the discrete vocabulary (K).
+            symbol_length (int): Number of symbols to output (L).
+            temperature (float): Gumbel-softmax temperature.
+        """
+        super().__init__()
+        self.temperature = temperature
+        self.num_symbols = num_symbols
+        self.symbol_length = symbol_length
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((1, symbol_length)),  # Output shape: [B, hidden_dim, 1, L]
+            nn.Flatten(start_dim=2)  # Shape: [B, hidden_dim, L]
+        )
+
+        self.to_logits = nn.Conv1d(hidden_dim, num_symbols, kernel_size=1)  # [B, K, L]
+
+    def forward(self, x, hard=False):
+        """
+        Args:
+            x (Tensor): Input tensor of shape [B, C, H, W]
+            hard (bool): Whether to sample hard one-hot vectors (straight-through).
+
+        Returns:
+            Tensor: One-hot (soft or hard) symbols of shape [B, L, K]
+        """
+        features = self.encoder(x)  # [B, hidden_dim, L]
+        logits = self.to_logits(features)  # [B, num_symbols, L]
+        symbols = F.gumbel_softmax(logits.permute(0, 2, 1), tau=self.temperature, hard=hard)
+        return symbols  # Shape: [B, L, K]
+
+
+# ----- Decoder: symbols -> image -----
+class DirectSymbolToImageDecoder(nn.Module):
+    def __init__(self, num_symbols=16, symbol_length=8, embed_dim=64, output_shape=(1, 47, 41)):
+        super().__init__()
+        self.embed = nn.Linear(num_symbols, embed_dim)
+        self.decoder = nn.Sequential(
+            nn.Linear(symbol_length * embed_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, output_shape[0] * output_shape[1] * output_shape[2]),
+            nn.Sigmoid()
+        )
+        self.output_shape = output_shape
+
+    def forward(self, symbols):
+        x = self.embed(symbols)  # [B, L, D]
+        x = x.view(x.size(0), -1)  # flatten
+        x = self.decoder(x)  # [B, C*H*W]
+        x = x.view(-1, *self.output_shape)  # reshape
+        return x
+
+
+

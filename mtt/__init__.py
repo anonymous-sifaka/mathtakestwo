@@ -3,9 +3,7 @@
 
 from .environment_data import shape_codes
 from .environment_data import number_set
-
 from .environment_data import edge_cases
-
 from .environment_data import markov_transition_probs
 
 from .environment_data import practice_questions
