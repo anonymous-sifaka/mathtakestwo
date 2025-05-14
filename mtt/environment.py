@@ -552,17 +552,21 @@ class ExampleGenerator:
         self.valid_counter = 0
         self.figsize = figsize
 
-    def show_example(self, return_figure=False):
+    def show_example(self, return_figure=False, return_answer=False):
         """
         Render a random example and a multiple-choice question.
         """
         example = self.generator.generate_batch(1)[0]
 
         if return_figure:
-            img = self.parser.render(example, figsize=self.figsize, show_image=False)
-            imgs = self.questions_generator.generate_question(example, show_image=False)
 
-            return img, imgs
+            img = self.parser.render(example, figsize=self.figsize, show_image=False)
+            imgs, answer = self.questions_generator.generate_question(example, show_image=False)
+
+            if return_answer:
+                return img, imgs, answer
+            else:
+                return img, imgs
 
         else:
             print('Example Image:')
@@ -713,7 +717,7 @@ class QuizGenerator:
         self.test_count = 0
         self.prev_rind = []
 
-    def get_next_practice(self, return_figure=False):
+    def get_next_practice(self, return_figure=False, return_answer=False):
         """
         Advance to the next practice question and render based on player role.
         Describer sees an image; visualizer sees options.
@@ -723,7 +727,7 @@ class QuizGenerator:
                 print('The answer to the last question is:',
                       np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
             print('✅ Practice Complete - Please move onto the next stage')
-            return None
+            return
 
         set_key = f'set_{self.practice_count}'
         idx = self.practice_as[set_key][self.player_n]
@@ -734,15 +738,20 @@ class QuizGenerator:
                   np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
 
         if self.player_type == 'describer':
+            rinds = self.practice_rinds[set_key][idx]
+
             if return_figure:
                 img = self.parser_practice.render(program, figsize=self.figsize, show_image=False)
                 self.practice_count += 1
-                return img
+                if return_answer:
+                    answer = np.where(np.asarray(rinds) == 0)[0][0] + 1
+                    return img, answer
+                else:
+                    return img
             else:
                 print(f'Question {self.practice_count} (Describer) - Image:\n')
                 self.parser_practice.render(program, figsize=self.figsize)
                 self.practice_count += 1
-                return None
 
         elif self.player_type == 'visualizer':
             options = self.practice_questions[set_key][idx]
@@ -762,10 +771,8 @@ class QuizGenerator:
                 self.practice_count += 1
 
             self.prev_rind = rinds
-            return None
-        return None
 
-    def get_next_test(self, return_figure=False):
+    def get_next_test(self, return_figure=False, return_answer=False):
         """
         Advance to the next test question and render based on player role.
         Describer sees image; visualizer sees options. No answers are shown.
@@ -779,11 +786,17 @@ class QuizGenerator:
         program = self.test_programs[set_key][idx]
 
         if self.player_type == 'describer':
-
+            rinds = self.test_rinds[set_key][idx]
             if return_figure:
+
                 img = self.parser_test.render(program, figsize=self.figsize, show_image=False)
                 self.test_count += 1
-                return img
+
+                if return_answer:
+                    answer = np.where(np.asarray(rinds) == 0)[0][0] + 1
+                    return img, answer
+                else:
+                    return img
             else:
                 print(f'Question {self.test_count} (Describer) - Image:\n')
                 self.parser_test.render(program, figsize=self.figsize)
@@ -805,8 +818,6 @@ class QuizGenerator:
                     program, show_image=True, options=options, rinds=rinds
                 )
                 self.test_count += 1
-            return None
-        return None
 
 
 import numpy as np
@@ -1037,13 +1048,3 @@ class EvalLogger:
                              'accuracy_dict': self.acc_dict}
         return self.eval_results
 
-        
-        
-        
-        
-        
-        
-        
-    
-
-    
