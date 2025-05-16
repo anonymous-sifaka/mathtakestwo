@@ -552,21 +552,17 @@ class ExampleGenerator:
         self.valid_counter = 0
         self.figsize = figsize
 
-    def show_example(self, return_figure=False, return_answer=False):
+    def show_example(self, return_figure=False):
         """
         Render a random example and a multiple-choice question.
         """
         example = self.generator.generate_batch(1)[0]
 
         if return_figure:
-
             img = self.parser.render(example, figsize=self.figsize, show_image=False)
-            imgs, answer = self.questions_generator.generate_question(example, show_image=False)
+            imgs = self.questions_generator.generate_question(example, show_image=False)
 
-            if return_answer:
-                return img, imgs, answer
-            else:
-                return img, imgs
+            return img, imgs
 
         else:
             print('Example Image:')
@@ -588,7 +584,7 @@ class ExampleGenerator:
             for case in edge_cases():
                 self.parser.render(case, figsize=self.figsize)
 
-    def generate_q_batch(self, program_str):
+    def generate_q_batch(self, program_str, return_text=False):
         """
         Generate a multiple-choice question and return image batch + answer.
 
@@ -598,12 +594,19 @@ class ExampleGenerator:
         Returns:
             tuple: (image_batch: [4, 1, H, W], answer: [bool array of length 4])
         """
-        images, answer = self.questions_generator.generate_question(program_str, show_image=False)
-        images_with_channel = [img[np.newaxis, ...] for img in images]  # Add channel dim
-        batch = np.stack(images_with_channel, axis=0)
-        return batch, answer
+        if return_text:
+            images, answer, options = self.questions_generator.generate_question(program_str, show_image=False,
+                                                                                 return_text=True)
+            images_with_channel = [img[np.newaxis, ...] for img in images]  # Add channel dim
+            batch = np.stack(images_with_channel, axis=0)
+            return batch, answer, options
+        else:
+            images, answer = self.questions_generator.generate_question(program_str, show_image=False)
+            images_with_channel = [img[np.newaxis, ...] for img in images]  # Add channel dim
+            batch = np.stack(images_with_channel, axis=0)
+            return batch, answer
 
-    def get_qna(self):
+    def get_qna(self, hugf_push=False):
         """
         Generate a new question-answer pair with an unseen program.
 
@@ -612,10 +615,15 @@ class ExampleGenerator:
         """
         example = self._sample_new_example()
         img = self.parser.render(example, show_image=False)
-        batch, answer = self.generate_q_batch(example)
-        return img, batch, answer
 
-    def get_qna_valid(self):
+        if hugf_push:
+            batch, answer, options = self.generate_q_batch(example, return_text=True)
+            return img, batch, answer, example, options
+        else:
+            batch, answer = self.generate_q_batch(example, return_text=False)
+            return img, batch, answer
+
+    def get_qna_valid(self, hugf_push=False):
         """
         Retrieve a validation set question-answer pair.
 
@@ -625,8 +633,13 @@ class ExampleGenerator:
         self.valid_counter = (self.valid_counter + 1) % self.valid_num
         program = self.valid_cases[self.valid_counter]
         img = self.parser.render(program, show_image=False)
-        batch, answer = self.generate_q_batch(program)
-        return img, batch, answer
+
+        if hugf_push:
+            batch, answer, options = self.generate_q_batch(program, return_text=True)
+            return img, batch, answer, program, options
+        else:
+            batch, answer = self.generate_q_batch(program)
+            return img, batch, answer
 
     def get_image(self):
         """
@@ -717,7 +730,7 @@ class QuizGenerator:
         self.test_count = 0
         self.prev_rind = []
 
-    def get_next_practice(self, return_figure=False, return_answer=False):
+    def get_next_practice(self, return_figure=False, return_program=False):
         """
         Advance to the next practice question and render based on player role.
         Describer sees an image; visualizer sees options.
@@ -727,10 +740,11 @@ class QuizGenerator:
                 print('The answer to the last question is:',
                       np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
             print('✅ Practice Complete - Please move onto the next stage')
-            return
+            return None
 
         set_key = f'set_{self.practice_count}'
         idx = self.practice_as[set_key][self.player_n]
+
         program = self.practice_programs[set_key][idx]
 
         if self.practice_count >= 1 and self.player_type == 'visualizer' and not return_figure:
@@ -738,20 +752,18 @@ class QuizGenerator:
                   np.where(np.asarray(self.prev_rind) == 0)[0][0] + 1)
 
         if self.player_type == 'describer':
-            rinds = self.practice_rinds[set_key][idx]
-
             if return_figure:
                 img = self.parser_practice.render(program, figsize=self.figsize, show_image=False)
                 self.practice_count += 1
-                if return_answer:
-                    answer = np.where(np.asarray(rinds) == 0)[0][0] + 1
-                    return img, answer
+                if return_program:
+                    return img, program
                 else:
                     return img
             else:
                 print(f'Question {self.practice_count} (Describer) - Image:\n')
                 self.parser_practice.render(program, figsize=self.figsize)
                 self.practice_count += 1
+                return None
 
         elif self.player_type == 'visualizer':
             options = self.practice_questions[set_key][idx]
@@ -762,7 +774,10 @@ class QuizGenerator:
                     program, show_image=False, options=options, rinds=rinds
                 )
                 self.practice_count += 1
-                return imgs
+                if return_program:
+                    return imgs, options
+                else:
+                    return imgs
             else:
                 print(f'Question {self.practice_count} (Visualizer): Which image is the describer seeing?\n')
                 self.practice_generator.generate_question(
@@ -771,8 +786,10 @@ class QuizGenerator:
                 self.practice_count += 1
 
             self.prev_rind = rinds
+            return None
+        return None
 
-    def get_next_test(self, return_figure=False, return_answer=False):
+    def get_next_test(self, return_figure=False, return_program=False):
         """
         Advance to the next test question and render based on player role.
         Describer sees image; visualizer sees options. No answers are shown.
@@ -786,15 +803,12 @@ class QuizGenerator:
         program = self.test_programs[set_key][idx]
 
         if self.player_type == 'describer':
-            rinds = self.test_rinds[set_key][idx]
-            if return_figure:
 
+            if return_figure:
                 img = self.parser_test.render(program, figsize=self.figsize, show_image=False)
                 self.test_count += 1
-
-                if return_answer:
-                    answer = np.where(np.asarray(rinds) == 0)[0][0] + 1
-                    return img, answer
+                if return_program:
+                    return img, program
                 else:
                     return img
             else:
@@ -811,13 +825,18 @@ class QuizGenerator:
                     program, show_image=False, options=options, rinds=rinds
                 )
                 self.test_count += 1
-                return imgs
+                if return_program:
+                    return imgs, options
+                else:
+                    return imgs
             else:
                 print(f'Question {self.test_count} (Visualizer): Which image is the describer seeing?\n')
                 self.test_generator.generate_question(
                     program, show_image=True, options=options, rinds=rinds
                 )
                 self.test_count += 1
+            return None
+        return None
 
 
 import numpy as np
@@ -875,10 +894,12 @@ class QuizGeneratorML:
             'practice': practice_questions()[1],
             'test': test_questions()[1]
         }
+
         self.assignments = {
             'practice': practice_assignments(),
             'test': test_assignments()
         }
+
         self.rinds = {
             'practice': practice_rinds(),
             'test': test_rinds()
@@ -936,7 +957,9 @@ class QuizGeneratorML:
 
 
 class EvalLogger:
-    def __init__(self, mode_1, mode_2):
+    def __init__(self, mode_1, mode_2, mode='ml'):
+
+        self.mode = mode
 
         assert mode_1 in {'precond', 'practice', 'test'}
         assert mode_1 in {'precond', 'practice', 'test'}
@@ -980,8 +1003,14 @@ class EvalLogger:
         self.count += len(prediction)
 
         correct = prediction == answer
-        correct = np.asarray(correct.cpu())
+
+        if self.mode == 'ml':
+            correct = np.asarray(correct.cpu())
+
         self.correct += correct.sum()
+
+        prediction = np.asarray(prediction)
+        answer = np.asarray(answer)
 
         for zz in range(len(program)):
             # Test if question is out of distribution
@@ -1047,4 +1076,13 @@ class EvalLogger:
                              'correct_dict': self.correct_dict,
                              'accuracy_dict': self.acc_dict}
         return self.eval_results
+
+
+
+
+
+
+
+
+
 

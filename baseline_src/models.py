@@ -9,48 +9,68 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.residual = nn.Conv2d(in_channels, out_channels, 1) if in_channels != out_channels else nn.Identity()
+
+    def forward(self, x):
+        residual = self.residual(x)
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        return self.relu(out + residual)
+
 
 class UNetCompressor(nn.Module):
-    def __init__(self):
-        super(UNetCompressor, self).__init__()
-
-        def block(in_channels, out_channels, num_convs=4):
-            layers = []
-            for i in range(num_convs):
-                conv_in = in_channels if i == 0 else out_channels
-                layers.append(nn.Conv2d(conv_in, out_channels, 3, padding=1))
-                layers.append(nn.BatchNorm2d(out_channels))
-                layers.append(nn.ReLU(inplace=True))
-            return nn.Sequential(*layers)
+    def __init__(self, bottleneck_dim=32, dropout_rate=0.05):
+        super().__init__()
 
         # --- Encoder ---
-        self.enc1 = block(1, 32)
+        self.enc1 = ResidualBlock(1, 32)
+        self.dropout1 = nn.Dropout2d(dropout_rate)  # Dropout after first layer
         self.pool1 = nn.MaxPool2d(2)
 
-        self.enc2 = block(32, 64)
+        self.enc2 = ResidualBlock(32, 64)
         self.pool2 = nn.MaxPool2d(2)
 
-        self.enc3 = block(64, 128)
+        self.enc3 = ResidualBlock(64, 128)
         self.pool3 = nn.MaxPool2d(2)
 
-        # Bottleneck
-        self.bottleneck = block(128, 128)
+        # --- Bottleneck ---
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(128, bottleneck_dim, 3, padding=1),
+            nn.BatchNorm2d(bottleneck_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout_rate),
+        )
 
         # --- Decoder ---
-        self.up3 = nn.Conv2d(128, 128, kernel_size=1)
-        self.dec3 = block(128, 64)
+        self.up3 = nn.Conv2d(bottleneck_dim, 128, 1)
+        self.dec3 = ResidualBlock(128, 64)
 
-        self.up2 = nn.Conv2d(64, 64, kernel_size=1)
-        self.dec2 = block(64 + 64, 32)
+        self.up2 = nn.Conv2d(64, 64, 1)
+        self.dec2 = ResidualBlock(64, 32)
 
-        self.up1 = nn.Conv2d(32, 32, kernel_size=1)
-        self.dec1 = block(32, 16)
+        self.up1 = nn.Conv2d(32, 32, 1)
+        self.dec1 = ResidualBlock(32, 32)
 
-        self.final = nn.Conv2d(16, 1, kernel_size=1)
+        self.final = nn.Conv2d(32, 1, kernel_size=1)
 
     def forward(self, x):
         # Encoder
         e1 = self.enc1(x)
+        e1 = self.dropout1(e1)
         p1 = self.pool1(e1)
 
         e2 = self.enc2(p1)
@@ -66,7 +86,7 @@ class UNetCompressor(nn.Module):
         d3 = self.dec3(up3)
 
         up2 = F.interpolate(self.up2(d3), size=e2.shape[2:], mode='bilinear', align_corners=False)
-        d2 = self.dec2(torch.cat([up2, e2], dim=1))
+        d2 = self.dec2(up2)
 
         up1 = F.interpolate(self.up1(d2), size=e1.shape[2:], mode='bilinear', align_corners=False)
         d1 = self.dec1(up1)
@@ -74,15 +94,14 @@ class UNetCompressor(nn.Module):
         return self.final(d1)
 
 
-##### MODELS FOR SYMBOLIC COMPRESSION ####
+##### MODELS FOR UNET PRETRAINED SYMBOLIC COMPRESSION ####
 
 class GumbelSymbolEncoder(nn.Module):
-    def __init__(self, in_dim, hidden_dim=128, num_symbols=8, symbol_length=4, temperature=1.0):
+    def __init__(self, in_dim, hidden_dim=1024, num_symbols=8, symbol_length=4, temperature=0.5):
         super().__init__()
         self.temperature = temperature
         self.symbol_length = symbol_length
         self.num_symbols = num_symbols
-
         self.encoder = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.ReLU(),
@@ -106,41 +125,30 @@ class GumbelSymbolEncoder(nn.Module):
 class SymbolToImageDecoder(nn.Module):
 
     def __init__(self, num_symbols=8, symbol_length=8, embed_dim=128,
-                 bottleneck_shape=(128, 5, 5), skip_shape=(64, 11, 10)):
+                 bottleneck_shape=(32, 5, 5)):
         super().__init__()
 
         self.bottleneck_shape = bottleneck_shape
-        self.skip_shape = skip_shape
 
         # Project discrete symbols to dense embedding
         self.embed = nn.Linear(num_symbols, embed_dim)
 
         # Bottleneck decoder
         self.bottleneck_decoder = nn.Sequential(
-            nn.Linear(1536, 4096),
+            nn.Linear(1024, 1024),
             nn.ReLU(),
-            nn.Linear(4096, bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2])
+            nn.Linear(1024, bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2])
         )
 
-        # Skip feature decoder
-        self.skip_decoder = nn.Sequential(
-            nn.Linear(512, 4096),
-            nn.ReLU(),
-            nn.Linear(4096, skip_shape[0] * skip_shape[1] * skip_shape[2])
-        )
-
-    def forward(self, sym_b, sym_skip):
+    def forward(self, sym_b):
         b = self.embed(sym_b).view(sym_b.size(0), -1)  # [B, L*D]
-        e2 = self.embed(sym_skip).view(sym_skip.size(0), -1)
-
         b_feats = self.bottleneck_decoder(b).view(-1, *self.bottleneck_shape)
-        e2_feats = self.skip_decoder(e2).view(-1, *self.skip_shape)
 
-        return b_feats, e2_feats
+        return b_feats
 
 
-class UNetWithSymbolicBottleneck(nn.Module):
-    def __init__(self, unet, bottleneck_shape=(256, 5, 5), skip_shape=(256, 11, 10),
+class UNETPreSymbolicBottleneck(nn.Module):
+    def __init__(self, unet, bottleneck_shape=(32, 5, 5),
                  num_symbols=8, symbol_length=8):
         super().__init__()
         self.unet = unet
@@ -148,30 +156,24 @@ class UNetWithSymbolicBottleneck(nn.Module):
             p.requires_grad = False
 
         self.bottleneck_shape = bottleneck_shape
-        self.skip_shape = skip_shape
-
         self.bottleneck_encoder = GumbelSymbolEncoder(
             in_dim=bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2],
             num_symbols=num_symbols,
-            symbol_length=6
-        )
-
-        self.skip_encoder = GumbelSymbolEncoder(
-            in_dim=skip_shape[0] * skip_shape[1] * skip_shape[2],
-            num_symbols=num_symbols,
-            symbol_length=2
+            symbol_length=symbol_length
         )
 
         self.decoder = SymbolToImageDecoder(
             num_symbols=num_symbols,
-            symbol_length=symbol_length,  # bottleneck + skip
-            embed_dim=256,
+            symbol_length=symbol_length,
+            embed_dim=128,
+            bottleneck_shape=bottleneck_shape,
         )
 
     def forward(self, x, hard=False):
-        # Pass through encoder
+        # Encoder
 
         e1 = self.unet.enc1(x)
+        e1 = self.unet.dropout1(e1)
         p1 = self.unet.pool1(e1)
 
         e2 = self.unet.enc2(p1)
@@ -180,58 +182,41 @@ class UNetWithSymbolicBottleneck(nn.Module):
         e3 = self.unet.enc3(p2)
         p3 = self.unet.pool3(e3)
 
-        b = self.unet.bottleneck(p3)  # [B, 128, 5, 5]
+        b = self.unet.bottleneck(p3)  # Now [B, 32, 5, 5]
 
-        # Extract and encode symbolic representations
+        # Symbolic Encoding
 
         b_flat = b.view(b.size(0), -1)
-        e2_resized = F.adaptive_avg_pool2d(e2, self.skip_shape[1:])
-        e2_flat = e2_resized.view(e2_resized.size(0), -1)
-
         sym_b = self.bottleneck_encoder(b_flat, hard=hard)
-        sym_skip = self.skip_encoder(e2_flat, hard=hard)
 
-        # Decode symbols back into feature maps
+        # Decode symbols
+        b_decoded = self.decoder(sym_b)
 
-        b_decoded, e2_decoded = self.decoder(sym_b, sym_skip)
-
-        # --- Decoder path from b_decoded and e2_decoded ---
-
+        # Decoder path
         up3 = F.interpolate(self.unet.up3(b_decoded), size=e3.shape[2:], mode='bilinear', align_corners=False)
         d3 = self.unet.dec3(up3)
 
-        up2 = F.interpolate(self.unet.up2(d3), size=e2_decoded.shape[2:], mode='bilinear', align_corners=False)
-        d2 = self.unet.dec2(torch.cat([up2, e2_decoded], dim=1))
+        up2 = F.interpolate(self.unet.up2(d3), size=e2.shape[2:], mode='bilinear', align_corners=False)
+        d2 = self.unet.dec2(up2)
 
         up1 = F.interpolate(self.unet.up1(d2), size=x.shape[2:], mode='bilinear', align_corners=False)
         d1 = self.unet.dec1(up1)
 
-        out = self.unet.final(d1)
+        return self.unet.final(d1), sym_b
 
-        # print(e3.shape[2:]) - use to define size for recon function if changing input image size
-        # print(e2_decoded.shape[2:])
-        # print(x.shape[2:])
-
-        return out, sym_b, sym_skip
-
-    def recon_from_symbols(self, sym_b, sym_skip, hard=False):
-        # Decode symbols back into feature maps
-
-        b_decoded, e2_decoded = self.decoder(sym_b, sym_skip)
-
-        # --- Decoder path from b_decoded and e2_decoded ---
+    def recon_from_symbols(self, sym_b, hard=False):
+        b_decoded, e2_decoded = self.decoder(sym_b)
 
         up3 = F.interpolate(self.unet.up3(b_decoded), size=[11, 10], mode='bilinear', align_corners=False)
         d3 = self.unet.dec3(up3)
 
         up2 = F.interpolate(self.unet.up2(d3), size=[11, 10], mode='bilinear', align_corners=False)
-        d2 = self.unet.dec2(torch.cat([up2, e2_decoded], dim=1))
+        d2 = self.unet.dec2(up2)
 
         up1 = F.interpolate(self.unet.up1(d2), size=[47, 41], mode='bilinear', align_corners=False)
         d1 = self.unet.dec1(up1)
 
-        out = self.unet.final(d1)
-        return out
+        return self.unet.final(d1)
 
 
 #### MODELS FOR INPUT vs. QUESTIONS SIMILARITY SEARCH ####
@@ -297,7 +282,8 @@ class SimilarityModel(nn.Module):
 ##### BASELINE SYMBOLIC COMPRESSION MODELS #####
 
 class DirectGumbelSymbolEncoder(nn.Module):
-    def __init__(self, in_channels=1, hidden_dim=64, num_symbols=16, symbol_length=8, temperature=1.0):
+    def __init__(self, in_channels=1, hidden_dim=64, num_symbols=8, symbol_length=8, temperature=0.5,
+                 dropout_rate=0.05):
         """
         Args:
             in_channels (int): Number of input channels (e.g., 1 for grayscale).
@@ -312,6 +298,7 @@ class DirectGumbelSymbolEncoder(nn.Module):
         self.symbol_length = symbol_length
 
         self.encoder = nn.Sequential(
+            nn.Dropout2d(dropout_rate),  # Dropout
             nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.AdaptiveAvgPool2d((1, symbol_length)),  # Output shape: [B, hidden_dim, 1, L]
@@ -331,13 +318,18 @@ class DirectGumbelSymbolEncoder(nn.Module):
         """
         features = self.encoder(x)  # [B, hidden_dim, L]
         logits = self.to_logits(features)  # [B, num_symbols, L]
-        symbols = F.gumbel_softmax(logits.permute(0, 2, 1), tau=self.temperature, hard=hard)
+
+        if hard:
+            symbols = F.one_hot(logits.permute(0, 2, 1).argmax(dim=-1), num_classes=self.num_symbols).float()
+        else:
+            symbols = F.gumbel_softmax(logits.permute(0, 2, 1), tau=self.temperature, hard=hard)
+
         return symbols  # Shape: [B, L, K]
 
 
 # ----- Decoder: symbols -> image -----
 class DirectSymbolToImageDecoder(nn.Module):
-    def __init__(self, num_symbols=16, symbol_length=8, embed_dim=64, output_shape=(1, 47, 41)):
+    def __init__(self, num_symbols=8, symbol_length=8, embed_dim=64, output_shape=(1, 47, 41)):
         super().__init__()
         self.embed = nn.Linear(num_symbols, embed_dim)
         self.decoder = nn.Sequential(
@@ -354,6 +346,32 @@ class DirectSymbolToImageDecoder(nn.Module):
         x = self.decoder(x)  # [B, C*H*W]
         x = x.view(-1, *self.output_shape)  # reshape
         return x
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SymbolicAutoencoder(nn.Module):
+    def __init__(self, encoder, decoder):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+
+    def forward(self, x, hard=False):
+        """
+        Args:
+            x (Tensor): Input image tensor of shape [B, C, H, W]
+            hard (bool): Whether to use hard (discrete) Gumbel-Softmax sampling
+
+        Returns:
+            x_recon (Tensor): Reconstructed image
+            symbols (Tensor): Symbolic representation [B, L, K]
+        """
+        symbols = self.encoder(x, hard=hard)
+        x_recon = self.decoder(symbols)
+        return x_recon, symbols
 
 
 

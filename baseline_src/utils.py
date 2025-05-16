@@ -44,12 +44,13 @@ def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_
     with torch.no_grad():
         for batch in dataloader:
             x = batch.to(device)  # [B, 1, 47, 41]
-            x_recon, sym_b, sym_skip = symbolic_model(x, hard=True)
+            x_recon, symbols = symbolic_model(x, hard=True)
 
             x = x.cpu().numpy()
             x_recon = x_recon.cpu().numpy()
-            sym_b = sym_b.argmax(dim=-1).cpu().numpy()  # [B, L]
-            sym_skip = sym_skip.argmax(dim=-1).cpu().numpy()  # [B, L]
+
+            symbols = symbols.argmax(dim=-1).cpu().numpy()  # [B, L]
+
             break  # single batch
 
     # Plot original vs reconstructed
@@ -68,10 +69,8 @@ def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_
         plt.axis("off")
 
         # Print symbolic tokens
-        b_tokens = ' '.join([f'b{tok}' for tok in sym_b[i]])
-        s_tokens = ' '.join([f's{tok}' for tok in sym_skip[i]])
+        b_tokens = ' '.join([f'b{tok}' for tok in symbols[i]])
         print(f"[Image {i + 1}] Bottleneck symbols:     {b_tokens}")
-        print(f"[Image {i + 1}] Skip connection symbols: {s_tokens}")
         print("")
 
     plt.tight_layout()
@@ -83,8 +82,13 @@ def visualize_qna_prediction(answer_model, symbolic_model, dataset, idx=None, de
     Visualizes the prediction of the model on a given index from the dataset.
     If idx is None, picks a random example.
     """
+    import matplotlib.pyplot as plt
+    import torch
+
     answer_model.eval()
     answer_model.to(device)
+    symbolic_model.eval()
+    symbolic_model.to(device)
 
     if idx is None:
         idx = torch.randint(0, len(dataset), (1,)).item()
@@ -92,11 +96,11 @@ def visualize_qna_prediction(answer_model, symbolic_model, dataset, idx=None, de
     img, questions, answer, program, options = dataset[idx]
     img = img.unsqueeze(0).to(device)  # [1, 1, H, W]
 
-    img_recon, sym_b, sym_skip = symbolic_model(img, hard=True)
+    # Get reconstructed image and symbolic representation
+    img_recon, symbols = symbolic_model(img, hard=True)
 
-    img_recon_np = img_recon.squeeze().cpu().numpy()
-    sym_b = sym_b.argmax(dim=-1).cpu().numpy()  # [B, L]
-    sym_skip = sym_skip.argmax(dim=-1).cpu().numpy()  # [B, L]
+    img_np = img.squeeze().detach().cpu().numpy()
+    img_recon_np = img_recon.squeeze().detach().cpu().numpy()
 
     questions = questions.unsqueeze(0).to(device)  # [1, 4, 1, H, W]
 
@@ -106,10 +110,8 @@ def visualize_qna_prediction(answer_model, symbolic_model, dataset, idx=None, de
 
     true_idx = answer.item()
 
-    # Convert to numpy for plotting
-
-    img_np = img.squeeze().cpu().numpy()
-    questions_np = questions.squeeze().cpu().numpy()  # [4, H, W]
+    # Convert questions to numpy for plotting
+    questions_np = questions.squeeze().detach().cpu().numpy()  # [4, H, W]
 
     # --- Plotting ---
     fig, axs = plt.subplots(1, 6, figsize=(15, 3))
@@ -122,14 +124,9 @@ def visualize_qna_prediction(answer_model, symbolic_model, dataset, idx=None, de
     axs[1].set_title("Reconstructed Image")
     axs[1].axis('off')
 
-    # Print program and answers
-    print(f"[Image {1}] | Program: {program} | | Questions: {options}")
-
-    # Print symbolic tokens
-    b_tokens = ' '.join([f'b{tok}' for tok in sym_b[0]])
-    s_tokens = ' '.join([f's{tok}' for tok in sym_skip[0]])
+    print(f"[Image {1}] | Program: {program} | Questions: {options}")
+    b_tokens = ' '.join([f'b{tok}' for tok in symbols])
     print(f"[Image {1}] Bottleneck symbols:     {b_tokens}")
-    print(f"[Image {1}] Skip connection symbols: {s_tokens}")
     print("")
 
     for i in range(4):
@@ -151,29 +148,17 @@ def visualize_recon_from_msg(symbolic_model, msg, device="cuda"):
     symbolic_model.eval()
 
     symbols = {'A': 0, 'B': 1, 'C': 2, '0': 3, '1': 4, '2': 5, '+': 6, '*': 7}
-    bneck_embedding = np.zeros((6, 8))
-    skip_embedding = np.zeros((2, 8))
+    bneck_embedding = np.zeros((8, 8))
 
-    bn_msg = msg[:6]
-    skp_msg = msg[6:]
-
-    locs = np.asarray([(i, symbols[c]) for i, c in enumerate(bn_msg)])
+    locs = np.asarray([(i, symbols[c]) for i, c in enumerate(msg)])
     for loc in locs:
         bneck_embedding[loc[0], loc[1]] = 1
 
-    locs = np.asarray([(i, symbols[c]) for i, c in enumerate(skp_msg)])
-    for loc in locs:
-        skip_embedding[loc[0], loc[1]] = 1
-
     bneck_embedding = np.expand_dims(bneck_embedding, axis=0)
-    skip_embedding = np.expand_dims(skip_embedding, axis=0)
 
     with torch.no_grad():
-
         bneck_embedding = torch.tensor(bneck_embedding.astype(np.float32)).to(device)
-        skip_embedding = torch.tensor(skip_embedding.astype(np.float32)).to(device)
-
-        x_recon = symbolic_model.recon_from_symbols(bneck_embedding, skip_embedding)
+        x_recon = symbolic_model.recon_from_symbols(bneck_embedding)
         x_recon = x_recon.cpu().numpy()[0, 0, :, :]
 
     # Plot reconstructed
