@@ -1,3 +1,4 @@
+
 # 🧠 Symbolic Communication Benchmark
 
 This repository contains a modular framework for generating and evaluating symbolic reasoning tasks between agents (or models), focusing on visual communication using structured shape-number programs.
