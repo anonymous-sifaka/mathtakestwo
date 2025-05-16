@@ -10,7 +10,6 @@ from .models import SymbolToImageDecoder
 from .models import DirectSymbolToImageDecoder
 from .models import DirectGumbelSymbolEncoder
 from .models import ImageEncoder
-from .models import UNetWithSymbolicBottleneck
 
 from .trainers import UNetTrainer
 from .trainers import SymbolicTrainer
