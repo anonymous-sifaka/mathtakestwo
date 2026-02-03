@@ -132,6 +132,6 @@ quiz.get_next_practice()  # Renders image
 
 ---
 
-## 📋 License
+## License
 
 MIT License. Attribution appreciated.
