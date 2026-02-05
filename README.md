@@ -1,5 +1,5 @@
 
-# 🧠 Symbolic Communication Benchmark
+# Symbolic Communication Benchmark
 
 This repository contains a modular framework for generating and evaluating symbolic reasoning tasks between agents (or models), focusing on visual communication using structured shape-number programs.
 
@@ -11,7 +11,7 @@ The system supports:
 
 ---
 
-## 🔧 Key Components
+## Key Components
 
 ### `QuizGenerator`
 
@@ -69,7 +69,7 @@ Dataset wrapper for both image-only and QnA-based symbolic data. Supports traini
 
 ---
 
-## 📦 Dependencies
+## Dependencies
 
 Make sure the following are installed:
 
@@ -79,7 +79,7 @@ pip install numpy torch torchvision matplotlib
 
 ---
 
-## 🚀 Usage Examples
+## Usage Examples
 
 ### Image Pretraining (PyTorch)
 
@@ -104,7 +104,7 @@ quiz.get_next_practice()  # Renders image
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```plaintext
 ├── generators/
@@ -124,7 +124,7 @@ quiz.get_next_practice()  # Renders image
 
 ---
 
-## 🧪 Evaluation Protocol
+## Evaluation Protocol
 
 * **Practice Phase**: Visual feedback is provided.
 * **Test Phase**: No feedback, designed for evaluation.
@@ -132,6 +132,14 @@ quiz.get_next_practice()  # Renders image
 
 ---
 
-## 📋 License
+
+## License
 
 MIT License. Attribution appreciated.
+
+
+
+
+
+
+
