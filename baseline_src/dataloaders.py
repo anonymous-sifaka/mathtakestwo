@@ -6,14 +6,13 @@ import numpy as np
 
 class PrecondDataset(Dataset):
     def __init__(self, generator,
-                 mode={'img_train', 'img_val', 'qna_train', 'qna_val'},
+                 mode='qna_train',
                  num_samples=1000,
                  transform=None):
 
         assert mode in {'img_train', 'img_val', 'qna_train', 'qna_val'}
 
         self.mode = mode
-
         self.generator = generator
         self.num_samples = num_samples
 
@@ -22,15 +21,13 @@ class PrecondDataset(Dataset):
         ])
 
     def __len__(self):
-
         if self.mode == 'img_train' or self.mode == 'qna_train':
             return self.num_samples
-
         if self.mode == 'img_val' or self.mode == 'qna_val':
             return self.generator.valid_num
 
     def tensor_convert(self, img, questions, answer):
-
+        
         # Tensor conversions
         img_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
         questions_tensor = torch.tensor(questions, dtype=torch.float32)
@@ -39,28 +36,24 @@ class PrecondDataset(Dataset):
         return img_tensor, questions_tensor, answer_tensor
 
     def __getitem__(self, idx):
-
         if self.mode == 'img_train':
             img = self.generator.get_image()  # returns np.array
             img = self.transform(img.astype(np.float32))
-
             return img
 
         if self.mode == 'img_val':
             img = self.generator.get_image_valid()  # returns np.array
             img = self.transform(img.astype(np.float32))
-
             return img
 
         if self.mode == 'qna_train':
             img, questions, answer = self.generator.get_qna()
-
             return self.tensor_convert(img, questions, answer)
 
         if self.mode == 'qna_val':
             img, questions, answer = self.generator.get_qna()
-
             return self.tensor_convert(img, questions, answer)
+
 
 
 class PracTestDataset(Dataset):

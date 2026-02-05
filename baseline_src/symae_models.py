@@ -96,7 +96,7 @@ class UNetCompressor(nn.Module):
 
 ##### MODELS FOR UNET PRETRAINED SYMBOLIC COMPRESSION ####
 
-class GumbelSymbolEncoder(nn.Module):
+class GumbelSymbolicDecoder(nn.Module):
     def __init__(self, in_dim, hidden_dim=1024, num_symbols=8, symbol_length=4, temperature=0.5):
         super().__init__()
         self.temperature = temperature
@@ -121,8 +121,7 @@ class GumbelSymbolEncoder(nn.Module):
 
         return symbols  # [B, L, K]
 
-
-class SymbolToImageDecoder(nn.Module):
+class GumbelSymbolicEncoder(nn.Module):
 
     def __init__(self, num_symbols=8, symbol_length=8, embed_dim=128,
                  bottleneck_shape=(32, 5, 5)):
@@ -133,7 +132,7 @@ class SymbolToImageDecoder(nn.Module):
         # Project discrete symbols to dense embedding
         self.embed = nn.Linear(num_symbols, embed_dim)
 
-        # Bottleneck decoder
+        # Bottleneck encoder
         self.bottleneck_decoder = nn.Sequential(
             nn.Linear(1024, 1024),
             nn.ReLU(),
@@ -156,13 +155,13 @@ class UNETPreSymbolicBottleneck(nn.Module):
             p.requires_grad = False
 
         self.bottleneck_shape = bottleneck_shape
-        self.bottleneck_encoder = GumbelSymbolEncoder(
+        self.bottleneck_decoder = GumbelSymbolicDecoder(
             in_dim=bottleneck_shape[0] * bottleneck_shape[1] * bottleneck_shape[2],
             num_symbols=num_symbols,
             symbol_length=symbol_length
         )
 
-        self.decoder = SymbolToImageDecoder(
+        self.encoder = GumbelSymbolicEncoder(
             num_symbols=num_symbols,
             symbol_length=symbol_length,
             embed_dim=128,
@@ -187,10 +186,10 @@ class UNETPreSymbolicBottleneck(nn.Module):
         # Symbolic Encoding
 
         b_flat = b.view(b.size(0), -1)
-        sym_b = self.bottleneck_encoder(b_flat, hard=hard)
+        sym_b = self.bottleneck_decoder(b_flat, hard=hard)
 
         # Decode symbols
-        b_decoded = self.decoder(sym_b)
+        b_decoded = self.encoder(sym_b)
 
         # Decoder path
         up3 = F.interpolate(self.unet.up3(b_decoded), size=e3.shape[2:], mode='bilinear', align_corners=False)
@@ -205,7 +204,7 @@ class UNETPreSymbolicBottleneck(nn.Module):
         return self.unet.final(d1), sym_b
 
     def recon_from_symbols(self, sym_b, hard=False):
-        b_decoded, e2_decoded = self.decoder(sym_b)
+        b_decoded, e2_decoded = self.encoder(sym_b)
 
         up3 = F.interpolate(self.unet.up3(b_decoded), size=[11, 10], mode='bilinear', align_corners=False)
         d3 = self.unet.dec3(up3)
@@ -281,7 +280,7 @@ class SimilarityModel(nn.Module):
 
 ##### BASELINE SYMBOLIC COMPRESSION MODELS #####
 
-class DirectGumbelSymbolEncoder(nn.Module):
+class DirectGumbelImageToSymbolic(nn.Module):
     def __init__(self, in_channels=1, hidden_dim=64, num_symbols=8, symbol_length=8, temperature=0.5,
                  dropout_rate=0.05):
         """
@@ -328,11 +327,11 @@ class DirectGumbelSymbolEncoder(nn.Module):
 
 
 # ----- Decoder: symbols -> image -----
-class DirectSymbolToImageDecoder(nn.Module):
+class DirectGumbelSymbolToImage(nn.Module):
     def __init__(self, num_symbols=8, symbol_length=8, embed_dim=64, output_shape=(1, 47, 41)):
         super().__init__()
         self.embed = nn.Linear(num_symbols, embed_dim)
-        self.decoder = nn.Sequential(
+        self.encoder = nn.Sequential(
             nn.Linear(symbol_length * embed_dim, 256),
             nn.ReLU(),
             nn.Linear(256, output_shape[0] * output_shape[1] * output_shape[2]),
@@ -343,7 +342,7 @@ class DirectSymbolToImageDecoder(nn.Module):
     def forward(self, symbols):
         x = self.embed(symbols)  # [B, L, D]
         x = x.view(x.size(0), -1)  # flatten
-        x = self.decoder(x)  # [B, C*H*W]
+        x = self.encoder(x)  # [B, C*H*W]
         x = x.view(-1, *self.output_shape)  # reshape
         return x
 
@@ -354,10 +353,10 @@ import torch.nn.functional as F
 
 
 class SymbolicAutoencoder(nn.Module):
-    def __init__(self, encoder, decoder):
+    def __init__(self, imgtosym, symtoimg):
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
+        self.imgtoimg = imgtosym
+        self.symtoimg = symtoimg
 
     def forward(self, x, hard=False):
         """
@@ -369,8 +368,8 @@ class SymbolicAutoencoder(nn.Module):
             x_recon (Tensor): Reconstructed image
             symbols (Tensor): Symbolic representation [B, L, K]
         """
-        symbols = self.encoder(x, hard=hard)
-        x_recon = self.decoder(symbols)
+        symbols = self.imgtoimg(x, hard=hard)
+        x_recon = self.symtoimg(symbols)
         return x_recon, symbols
 
 

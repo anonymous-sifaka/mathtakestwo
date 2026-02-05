@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from tqdm import tqdm
+from PIL import Image
+import numpy as np
 
 
 ##### UNET PRETRAINER #####
@@ -108,16 +110,27 @@ class SymbolicAttentionTrainer:
                 self.optimizer.zero_grad()
                 x_recon, symbols = self.model(x, hard=False)
 
-                sym_b = symbols[0]
-                sym_skip = symbols[1]
+                # symbols is a single tensor [B, L, K], not a tuple
+                # sym_b = symbols[0]  # Remove this line
+                # sym_skip = symbols[1]  # Remove this line
 
-                loss = self.loss_fn(x_recon, x)
+                # Main reconstruction loss
+                recon_loss = self.loss_fn(x_recon, x)
+                
+                # L2 regularization loss
+                l2_loss = 0.0
+                for param in self.model.parameters():
+                    l2_loss += torch.norm(param, p=2)
+                l2_loss = l2_loss * 1e-5  # Small weight decay
+                
+                # Combined loss
+                total_loss = recon_loss + l2_loss
 
-                loss.backward()
+                total_loss.backward()
                 self.optimizer.step()
 
-                total_train_loss += loss.item()
-                loop.set_postfix(loss=loss.item())
+                total_train_loss += total_loss.item()
+                loop.set_postfix(loss=total_loss.item())
 
             avg_train_loss = total_train_loss / len(self.train_loader)
             avg_val_loss = self._validate()
@@ -143,8 +156,8 @@ class SymbolicAttentionTrainer:
             for batch in self.val_loader:
                 x = batch.to(self.device)
                 x_recon, _ = self.model(x, hard=True)
-                loss = self.loss_fn(x_recon, x)
-                total_val_loss += loss.item()
+                val_loss = self.loss_fn(x_recon, x)
+                total_val_loss += val_loss.item()
         return total_val_loss / len(self.val_loader)
 
     def _save_checkpoint(self, epoch):
@@ -188,10 +201,6 @@ class QnATrainer:
         for epoch in range(self.num_epochs):
             train_loss, train_acc = self._train_one_epoch(epoch)
             val_loss, val_acc = self._validate(epoch)
-
-            print(f"\nEpoch {epoch + 1}: "
-                  f"Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f} | "
-                  f"Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
 
             if val_acc > self.best_val_acc:
                 self.best_val_acc = val_acc

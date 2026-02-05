@@ -38,7 +38,7 @@ def visualize_reconstructions_unet(model, dataloader, num_examples=5, batch_size
                 plt.show()
 
 
-def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_examples=5):
+def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_examples=5, hard=True):
     symbolic_model.eval()
 
     with torch.no_grad():
@@ -49,7 +49,8 @@ def visualize_img_reconstruction(symbolic_model, dataloader, device="cuda", num_
             x = x.cpu().numpy()
             x_recon = x_recon.cpu().numpy()
 
-            symbols = symbols.argmax(dim=-1).cpu().numpy()  # [B, L]
+            if not hard:
+                symbols = symbols.argmax(dim=-1).cpu().numpy()  # [B, L]
 
             break  # single batch
 
